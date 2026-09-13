@@ -46,4 +46,50 @@ final class NotebookStoreTests: XCTestCase {
         XCTAssertNotNil(store.storageMessage)
         XCTAssertEqual(try Data(contentsOf: fileURL), originalBytes)
     }
+
+    @MainActor
+    func testNotebookRenameAndPageManagementPersistAndKeepOnePage() throws {
+        let storageRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PencilPagesTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: storageRoot) }
+
+        let store = NotebookStore(storageRootURL: storageRoot)
+        let notebook = try XCTUnwrap(store.notebooks.first)
+        let originalPageID = try XCTUnwrap(notebook.pages.first?.id)
+        store.renameNotebook(notebook.id, to: "  Biology Notes  ")
+        let duplicatePageID = try XCTUnwrap(store.duplicatePage(in: notebook.id, pageID: originalPageID))
+
+        store.movePage(in: notebook.id, pageID: duplicatePageID, by: -1)
+        XCTAssertTrue(store.deletePage(in: notebook.id, pageID: originalPageID))
+        XCTAssertFalse(store.deletePage(in: notebook.id, pageID: duplicatePageID))
+        XCTAssertTrue(store.flushPendingSaves())
+
+        let reopenedStore = NotebookStore(storageRootURL: storageRoot)
+        let reopenedNotebook = try XCTUnwrap(reopenedStore.notebook(id: notebook.id))
+        XCTAssertEqual(reopenedNotebook.title, "Biology Notes")
+        XCTAssertEqual(reopenedNotebook.pages.map(\.id), [duplicatePageID])
+        XCTAssertNil(reopenedStore.storageMessage)
+    }
+
+    @MainActor
+    func testFlushRetriesNotebookAfterStorageBecomesAvailable() async throws {
+        let storageRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PencilPagesBlockedStorage-\(UUID().uuidString)")
+        try Data([0x01]).write(to: storageRoot)
+        defer { try? FileManager.default.removeItem(at: storageRoot) }
+
+        let store = NotebookStore(storageRootURL: storageRoot)
+        let notebookID = store.createNotebook()
+        store.renameNotebook(notebookID, to: "Saved After Recovery")
+        XCTAssertNotNil(store.storageMessage)
+        try await Task.sleep(nanoseconds: 800_000_000)
+
+        try FileManager.default.removeItem(at: storageRoot)
+        try FileManager.default.createDirectory(at: storageRoot, withIntermediateDirectories: true)
+        XCTAssertTrue(store.flushPendingSaves())
+
+        let reopenedStore = NotebookStore(storageRootURL: storageRoot)
+        XCTAssertEqual(reopenedStore.notebook(id: notebookID)?.title, "Saved After Recovery")
+        XCTAssertNil(reopenedStore.storageMessage)
+    }
 }

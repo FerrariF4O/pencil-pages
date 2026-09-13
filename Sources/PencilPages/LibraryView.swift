@@ -5,6 +5,9 @@ struct LibraryView: View {
     @State private var showingTrash = false
     @State private var searchText = ""
     @State private var pendingDelete: Notebook?
+    @State private var renamingNotebookID: UUID?
+    @State private var renameTitle = ""
+    @State private var showingRenameDialog = false
     @State private var path: [UUID] = []
 
     private var visibleNotebooks: [Notebook] {
@@ -27,6 +30,17 @@ struct LibraryView: View {
                         ForEach(visibleNotebooks) { notebook in
                             NavigationLink(value: notebook.id) {
                                 NotebookRow(notebook: notebook, showingTrash: showingTrash)
+                            }
+                            .contextMenu {
+                                if !showingTrash {
+                                    Button {
+                                        renamingNotebookID = notebook.id
+                                        renameTitle = notebook.title
+                                        showingRenameDialog = true
+                                    } label: {
+                                        Label("Rename", systemImage: "pencil")
+                                    }
+                                }
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 if showingTrash {
@@ -96,6 +110,19 @@ struct LibraryView: View {
                 Button("Cancel", role: .cancel) { pendingDelete = nil }
             } message: {
                 Text("This cannot be undone. Export a copy first if you want to keep it.")
+            }
+            .alert("Rename Notebook", isPresented: $showingRenameDialog) {
+                TextField("Notebook name", text: $renameTitle)
+                Button("Save") {
+                    if let renamingNotebookID {
+                        store.renameNotebook(renamingNotebookID, to: renameTitle)
+                    }
+                    renamingNotebookID = nil
+                }
+                .disabled(renameTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Cancel", role: .cancel) { renamingNotebookID = nil }
+            } message: {
+                Text("Enter a name for this notebook.")
             }
         }
     }

@@ -12,6 +12,7 @@ struct NotebookEditorView: View {
     @State private var lineWidth: CGFloat = 3
     @State private var exportDocument: ExportedNotebook?
     @State private var showingExportError = false
+    @State private var showingDeletePageConfirmation = false
     @StateObject private var canvasActions = CanvasActions()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -37,6 +38,7 @@ struct NotebookEditorView: View {
             pageArea
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(red: 0.90, green: 0.91, blue: 0.93))
+            pageThumbnails
             Divider()
             pageControls
         }
@@ -64,6 +66,12 @@ struct NotebookEditorView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("The latest changes could not be saved. Check available storage and try again.")
+        }
+        .confirmationDialog("Delete this page?", isPresented: $showingDeletePageConfirmation, titleVisibility: .visible) {
+            Button("Delete Page", role: .destructive) { deleteSelectedPage() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the page and its handwriting. A notebook must keep at least one page.")
         }
     }
 
@@ -227,6 +235,31 @@ struct NotebookEditorView: View {
                     Image(systemName: "doc.text.image")
                 }
                 .accessibilityLabel("Paper style")
+
+                Menu {
+                    Button("Duplicate Page", systemImage: "plus.square.on.square") {
+                        canvasActions.commitCurrentDrawing?()
+                        if let newPageID = store.duplicatePage(in: notebookID, pageID: selectedPage.id) {
+                            selectedPageID = newPageID
+                        }
+                    }
+                    Button("Move Page Earlier", systemImage: "arrow.up") {
+                        store.movePage(in: notebookID, pageID: selectedPage.id, by: -1)
+                    }
+                    .disabled(selectedIndex == 0)
+                    Button("Move Page Later", systemImage: "arrow.down") {
+                        store.movePage(in: notebookID, pageID: selectedPage.id, by: 1)
+                    }
+                    .disabled(selectedIndex >= (notebook?.pages.count ?? 1) - 1)
+                    Divider()
+                    Button("Delete Page", systemImage: "trash", role: .destructive) {
+                        showingDeletePageConfirmation = true
+                    }
+                    .disabled((notebook?.pages.count ?? 0) <= 1)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("Page actions")
             }
         }
         .buttonStyle(.plain)
@@ -240,11 +273,86 @@ struct NotebookEditorView: View {
         guard notebook.pages.indices.contains(index) else { return }
         selectedPageID = notebook.pages[index].id
     }
+
+    @ViewBuilder
+    private var pageThumbnails: some View {
+        if let pages = notebook?.pages, pages.count > 1 {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .bottom, spacing: 8) {
+                    ForEach(Array(pages.enumerated()), id: \.element.id) { entry in
+                        let index = entry.offset
+                        let page = entry.element
+                        Button {
+                            selectedPageID = page.id
+                        } label: {
+                            VStack(spacing: 3) {
+                                ZStack {
+                                    PaperBackgroundView(style: page.paper)
+                                    PageInkPreview(drawingData: page.drawingData)
+                                        .allowsHitTesting(false)
+                                }
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 3)
+                                            .stroke(selectedPageID == page.id ? Color.accentColor : Color.gray.opacity(0.35), lineWidth: selectedPageID == page.id ? 2 : 0.75)
+                                    }
+                                    .frame(width: 38, height: 52)
+                                    .clipShape(RoundedRectangle(cornerRadius: 3))
+                                Text("\(index + 1)")
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(selectedPageID == page.id ? Color.accentColor : Color.secondary)
+                            }
+                            .padding(5)
+                            .background(selectedPageID == page.id ? Color.accentColor.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Go to page \(index + 1)")
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 3)
+            }
+            .frame(height: 72)
+            .background(Color(uiColor: .systemBackground))
+        }
+    }
+
+    private func deleteSelectedPage() {
+        guard let selectedPage else { return }
+        let oldIndex = selectedIndex
+        guard store.deletePage(in: notebookID, pageID: selectedPage.id),
+              let remainingPages = store.notebook(id: notebookID)?.pages,
+              !remainingPages.isEmpty else { return }
+        selectedPageID = remainingPages[min(oldIndex, remainingPages.count - 1)].id
+    }
 }
 
 private struct ExportedNotebook: Identifiable {
     let id = UUID()
     let url: URL
+}
+
+private struct PageInkPreview: View {
+    let drawingData: Data
+    @State private var preview: UIImage?
+
+    var body: some View {
+        Group {
+            if let preview {
+                Image(uiImage: preview)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+            }
+        }
+        .task(id: drawingData) {
+            let data = drawingData
+            let renderedPreview = await Task.detached(priority: .utility) {
+                guard let drawing = try? PKDrawing(data: data) else { return nil as UIImage? }
+                return drawing.image(from: CGRect(x: 0, y: 0, width: 595, height: 842), scale: 0.06)
+            }.value
+            preview = renderedPreview
+        }
+    }
 }
 
 private struct NotebookShareSheet: UIViewControllerRepresentable {

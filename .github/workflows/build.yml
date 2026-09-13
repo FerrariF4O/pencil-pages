@@ -77,4 +77,4 @@ jobs:
             build/PencilPages-unsigned.ipa
             build/PencilPages-unsigned.ipa.sha256
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90

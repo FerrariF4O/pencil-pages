@@ -8,6 +8,8 @@ final class NotebookStore: ObservableObject {
     @Published private(set) var storageMessage: String?
 
     private var pendingSaves: [UUID: DispatchWorkItem] = [:]
+    private var pendingSaveTokens: [UUID: UUID] = [:]
+    private var dirtyNotebookIDs: Set<UUID> = []
     private var loadWarning: String?
     private var writeWarnings: [UUID: String] = [:]
     private let fileManager = FileManager.default
@@ -19,6 +21,7 @@ final class NotebookStore: ObservableObject {
         if notebooks.isEmpty && !hadNotebookFiles && storageMessage == nil {
             let first = Notebook(title: "My First Notebook")
             notebooks = [first]
+            dirtyNotebookIDs.insert(first.id)
             persist(first)
         }
     }
@@ -43,6 +46,7 @@ final class NotebookStore: ObservableObject {
         let title = "Notebook \(notebooks.count + 1)"
         let notebook = Notebook(title: title)
         notebooks.append(notebook)
+        dirtyNotebookIDs.insert(notebook.id)
         persist(notebook)
         return notebook.id
     }
@@ -51,6 +55,48 @@ final class NotebookStore: ObservableObject {
         mutate(notebookID) { notebook in
             notebook.pages.append(NotebookPage())
         }
+    }
+
+    func renameNotebook(_ notebookID: UUID, to title: String) {
+        let cleanedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedTitle.isEmpty else { return }
+        mutate(notebookID) { $0.title = cleanedTitle }
+    }
+
+    @discardableResult
+    func duplicatePage(in notebookID: UUID, pageID: UUID) -> UUID? {
+        guard let notebook = notebook(id: notebookID),
+              let index = notebook.pages.firstIndex(where: { $0.id == pageID }) else { return nil }
+        var duplicate = notebook.pages[index]
+        duplicate.id = UUID()
+        let duplicateID = duplicate.id
+        mutate(notebookID) { notebook in
+            notebook.pages.insert(duplicate, at: index + 1)
+        }
+        return duplicateID
+    }
+
+    func movePage(in notebookID: UUID, pageID: UUID, by offset: Int) {
+        guard offset != 0,
+              let notebook = notebook(id: notebookID),
+              let index = notebook.pages.firstIndex(where: { $0.id == pageID }),
+              notebook.pages.indices.contains(index + offset) else { return }
+        mutate(notebookID) { notebook in
+            let destination = index + offset
+            let page = notebook.pages.remove(at: index)
+            notebook.pages.insert(page, at: destination)
+        }
+    }
+
+    @discardableResult
+    func deletePage(in notebookID: UUID, pageID: UUID) -> Bool {
+        guard let notebook = notebook(id: notebookID),
+              notebook.pages.count > 1,
+              let index = notebook.pages.firstIndex(where: { $0.id == pageID }) else { return false }
+        mutate(notebookID) { notebook in
+            notebook.pages.remove(at: index)
+        }
+        return true
     }
 
     func setPaper(_ paper: PaperStyle, notebookID: UUID, pageID: UUID) {
@@ -82,9 +128,11 @@ final class NotebookStore: ObservableObject {
     func permanentlyDelete(_ notebookID: UUID) {
         pendingSaves[notebookID]?.cancel()
         pendingSaves[notebookID] = nil
+        pendingSaveTokens[notebookID] = nil
         do {
             try fileManager.removeItem(at: url(for: notebookID))
             notebooks.removeAll { $0.id == notebookID }
+            dirtyNotebookIDs.remove(notebookID)
             writeWarnings[notebookID] = nil
             refreshStorageMessage()
         } catch {
@@ -96,11 +144,18 @@ final class NotebookStore: ObservableObject {
     @discardableResult
     func flushPendingSaves() -> Bool {
         var allSavesSucceeded = true
-        for (id, workItem) in pendingSaves {
+        for workItem in pendingSaves.values {
             workItem.cancel()
-            if let notebook = notebook(id: id), !persist(notebook) { allSavesSucceeded = false }
         }
         pendingSaves.removeAll()
+        pendingSaveTokens.removeAll()
+        for id in Array(dirtyNotebookIDs) {
+            guard let notebook = notebook(id: id) else {
+                dirtyNotebookIDs.remove(id)
+                continue
+            }
+            if !persist(notebook) { allSavesSucceeded = false }
+        }
         return allSavesSucceeded
     }
 
@@ -112,6 +167,7 @@ final class NotebookStore: ObservableObject {
         guard let index = notebooks.firstIndex(where: { $0.id == id }) else { return }
         change(&notebooks[index])
         notebooks[index].updatedAt = .now
+        dirtyNotebookIDs.insert(id)
         if persistImmediately {
             _ = saveNow(id)
         } else {
@@ -123,16 +179,22 @@ final class NotebookStore: ObservableObject {
     func saveNow(_ notebookID: UUID) -> Bool {
         pendingSaves[notebookID]?.cancel()
         pendingSaves[notebookID] = nil
+        pendingSaveTokens[notebookID] = nil
         guard let notebook = notebook(id: notebookID) else { return false }
         return persist(notebook)
     }
 
     private func scheduleSave(for id: UUID) {
         pendingSaves[id]?.cancel()
+        let token = UUID()
+        pendingSaveTokens[id] = token
         let work = DispatchWorkItem { [weak self] in
-            guard let self, let notebook = self.notebook(id: id) else { return }
-            self.persist(notebook)
+            guard let self,
+                  self.pendingSaveTokens[id] == token,
+                  let notebook = self.notebook(id: id) else { return }
+            self.pendingSaveTokens[id] = nil
             self.pendingSaves[id] = nil
+            self.persist(notebook)
         }
         pendingSaves[id] = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
@@ -182,10 +244,12 @@ final class NotebookStore: ObservableObject {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(notebook)
             try data.write(to: url(for: notebook.id), options: .atomic)
+            dirtyNotebookIDs.remove(notebook.id)
             writeWarnings[notebook.id] = nil
             refreshStorageMessage()
             return true
         } catch {
+            dirtyNotebookIDs.insert(notebook.id)
             writeWarnings[notebook.id] = "Could not save a notebook: \(error.localizedDescription)"
             refreshStorageMessage()
             return false

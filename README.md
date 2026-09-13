@@ -4,6 +4,10 @@ Pencil Pages is a free, local-first notebook for iPad. The first milestone is an
 
 The public source repository is [FerrariF4O/pencil-pages](https://github.com/FerrariF4O/pencil-pages).
 
+## Get Pencil Pages onto an iPad
+
+The current test build is available from the [GitHub Actions build page](https://github.com/FerrariF4O/pencil-pages/actions/workflows/build.yml). Download the artifact from the newest green run, then follow the step-by-step [Windows installation guide](INSTALL-ON-IPAD.md). This is an unsigned test app, so it must be signed on a Windows PC with Sideloadly; opening the ZIP on the iPad will not install it.
+
 There are no subscriptions, ads, usage limits, or online services in this project. Notes stay in the app's private local storage. Writes are atomic; unrecognized or damaged notebook files are preserved and reported instead of being overwritten. The prototype can export an editable notebook file through the iPad share sheet. Direct Files import and restore are planned for a later milestone.
 
 ## Build from Windows
